@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Zoya Web Speech Bridge</title>
+</head>
+<body style="background: black; color: white; font-family: sans-serif; padding: 20px;">
+    <h3>Zoya Web Speech Bridge Active</h3>
+    <div id="status">Initialized</div>
+    <div id="result">Waiting for voice input...</div>
+
+    <script>
+        var recognition;
+        var isStarted = false;
+        var statusDiv = document.getElementById("status");
+        var resultDiv = document.getElementById("result");
+
+        function updateStatus(txt) {
+            statusDiv.innerText = txt;
+            console.log("STT Status: " + txt);
+        }
+
+        function updateResult(txt) {
+            resultDiv.innerText = txt;
+        }
+
+        function initRecognition() {
+            var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                updateStatus("Error: Web Speech API NOT supported in this WebView engine");
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onError("Web Speech API not supported in this WebView engine");
+                }
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = function() {
+                isStarted = true;
+                updateStatus("Listening...");
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onStart();
+                }
+            };
+
+            recognition.onerror = function(event) {
+                updateStatus("Error: " + event.error);
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onError(event.error);
+                }
+            };
+
+            recognition.onend = function() {
+                isStarted = false;
+                updateStatus("Stopped");
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onEnd();
+                }
+            };
+
+            recognition.onresult = function(event) {
+                var interimTranscript = '';
+                var finalTranscript = '';
+
+                for (var i = event.resultIndex; i < event.results.length; ++i) {
+                    var transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript;
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+
+                var fullResult = finalTranscript || interimTranscript;
+                updateResult(fullResult);
+
+                if (window.AndroidBridge) {
+                    if (finalTranscript.length > 0) {
+                        window.AndroidBridge.onResult(finalTranscript, true);
+                        // Save to IndexedDB automatically
+                        saveTranscriptToDB("user", finalTranscript, window.currentPersonality || "Standard");
+                    } else if (interimTranscript.length > 0) {
+                        window.AndroidBridge.onResult(interimTranscript, false);
+                    }
+                }
+            };
+        }
+
+        // IndexedDB transcript persistence layer
+        var db;
+        var dbRequest = indexedDB.open("ZoyaVoiceArchive", 1);
+        
+        dbRequest.onupgradeneeded = function(event) {
+            db = event.target.result;
+            if (!db.objectStoreNames.contains("transcripts")) {
+                db.createObjectStore("transcripts", { keyPath: "id", autoIncrement: true });
+            }
+            console.log("IndexedDB Object store created");
+        };
+
+        dbRequest.onsuccess = function(event) {
+            db = event.target.result;
+            console.log("IndexedDB ZoyaVoiceArchive initialized successfully");
+            // Automatically request initial fetch
+            fetchTranscriptsFromDB();
+        };
+
+        dbRequest.onerror = function(event) {
+            console.error("IndexedDB initialization error: " + event.target.errorCode);
+        };
+
+        function setPersonality(personality) {
+            window.currentPersonality = personality;
+        }
+
+        function saveTranscriptToDB(role, text, personality) {
+            if (!db) {
+                console.warn("IndexedDB not ready yet");
+                return;
+            }
+            var transaction = db.transaction(["transcripts"], "readwrite");
+            var store = transaction.objectStore("transcripts");
+            var entry = {
+                timestamp: Date.now(),
+                role: role,
+                text: text,
+                personality: personality || "Standard"
+            };
+            var request = store.add(entry);
+            request.onsuccess = function() {
+                console.log("Transcript successfully persisted in IndexedDB");
+                // Refresh list automatically
+                fetchTranscriptsFromDB();
+            };
+            request.onerror = function() {
+                console.error("Failed to save transcript in IndexedDB");
+            };
+        }
+
+        function fetchTranscriptsFromDB() {
+            if (!db) {
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onTranscriptsLoaded("[]");
+                }
+                return;
+            }
+            var transaction = db.transaction(["transcripts"], "readonly");
+            var store = transaction.objectStore("transcripts");
+            var request = store.getAll();
+            
+            request.onsuccess = function(event) {
+                var list = event.target.result || [];
+                // Sort descending by timestamp so latest interactions show first
+                list.sort(function(a, b) { return b.timestamp - a.timestamp; });
+                var jsonStr = JSON.stringify(list);
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onTranscriptsLoaded(jsonStr);
+                }
+            };
+            request.onerror = function() {
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onTranscriptsLoaded("[]");
+                }
+            };
+        }
+
+        function clearTranscriptsFromDB() {
+            if (!db) return;
+            var transaction = db.transaction(["transcripts"], "readwrite");
+            var store = transaction.objectStore("transcripts");
+            var request = store.clear();
+            request.onsuccess = function() {
+                console.log("IndexedDB transcripts cleared successfully");
+                if (window.AndroidBridge) {
+                    window.AndroidBridge.onTranscriptsLoaded("[]");
+                }
+            };
+        }
+
+        function startRecognition() {
+            if (!recognition) {
+                initRecognition();
+            }
+            if (recognition && !isStarted) {
+                try {
+                    recognition.start();
+                } catch (e) {
+                    updateStatus("Start exception: " + e.message);
+                    if (window.AndroidBridge) {
+                        window.AndroidBridge.onError(e.message);
+                    }
+                }
+            }
+        }
+
+        function stopRecognition() {
+            if (recognition && isStarted) {
+                try {
+                    recognition.stop();
+                } catch (e) {
+                    updateStatus("Stop exception: " + e.message);
+                }
+            }
+        }
+
+        // Auto initialize on load
+        initRecognition();
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "Zoya AI",
+  "description": "Zoya is an advanced voice-activated AI assistant powered by Gemini, featuring local conversation persistence and natural text-to-speech voice output.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
